@@ -3,7 +3,10 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.PrintWriter;
 import java.net.*;
+import java.util.Arrays;
+import java.util.HashSet;
 import java.util.Scanner;
+import java.util.Set;
 
 public class Client {
   public static void main (String[] args) {
@@ -24,17 +27,22 @@ public class Client {
     tcpPort = Integer.parseInt(args[1]);
     udpPort = Integer.parseInt(args[2]);
 
-    byte[] rbuffer = new byte[1024];
-    DatagramPacket sPacket, rPacket;
+    Set<String> possibleCommands = new HashSet<>(Arrays.asList("setmode", "purchase", "cancel", "search", "list"));
+
+    Socket clientSocket = null;
+    PrintWriter out = null;
+    BufferedReader in = null;
 
     try {
+      //UDP
       InetAddress ia = InetAddress.getByName(hostAddress);
+      DatagramSocket dataSocket = new DatagramSocket();
+      byte[] rbuffer = new byte[1024];
 
-      DatagramSocket datasocket = new DatagramSocket();
-
-      Socket clientSocket = new Socket(ia.getHostName(), tcpPort);
-      PrintWriter out = new PrintWriter(clientSocket.getOutputStream(), true);
-      BufferedReader in = new BufferedReader(new InputStreamReader(clientSocket.getInputStream()));
+      //TCP
+      clientSocket = new Socket(ia.getHostName(), tcpPort);
+      out = new PrintWriter(clientSocket.getOutputStream(), true);
+      in = new BufferedReader(new InputStreamReader(clientSocket.getInputStream()));
 
       Scanner sc = new Scanner(System.in);
       while(sc.hasNextLine()) {
@@ -49,42 +57,26 @@ public class Client {
             usingTCP = false;
             System.out.println("New communication is UDP");
           }
-        }
-
-        else if (tokens[0].equals("purchase")) {
-          // TODO: send appropriate command to the server and display the
-          // appropriate responses form the server
-        } else if (tokens[0].equals("cancel")) {
-          // TODO: send appropriate command to the server and display the
-          // appropriate responses form the server
-        } else if (tokens[0].equals("search")) {
-          // TODO: send appropriate command to the server and display the
-          // appropriate responses form the server
-        } else if (tokens[0].equals("list")) {
-          // TODO: send appropriate command to the server and display the
-          // appropriate responses form the server
-        } else {
+        } else if (!possibleCommands.contains(tokens[0])) {
           System.out.println("ERROR: No such command");
         }
+        else {
+          if (usingTCP) { //TCP
+            out.println(cmd);
+            String resp = in.readLine();
+            System.out.println(resp.replaceAll(";", "\n"));
+          } else { //UDP
+            byte[] buffer = new byte[cmd.length()];
+            buffer = cmd.getBytes();
+            DatagramPacket request = new DatagramPacket(buffer, buffer.length, ia, udpPort);
+            dataSocket.send(request);
 
+            DatagramPacket response = new DatagramPacket(rbuffer, rbuffer.length);
+            dataSocket.receive(response);
+            String resp = new String(response.getData(), 0, response.getLength());
 
-        if (usingTCP) {
-          out.println(cmd);
-
-          String resp = in.readLine();
-          System.out.println(resp);
-
-        } else {
-          byte[] buffer = new byte[cmd.length()];
-          buffer = cmd.getBytes();
-          sPacket = new DatagramPacket(buffer, buffer.length, ia, udpPort);
-          datasocket.send(sPacket);
-
-          rPacket = new DatagramPacket(rbuffer, rbuffer.length);
-          datasocket.receive(rPacket);
-          String resp = new String(rPacket.getData(), 0, rPacket.getLength());
-
-          System.out.println(resp);
+            System.out.println(resp.replaceAll(";", "\n"));
+          }
         }
       }
     } catch (UnknownHostException e) {
@@ -93,6 +85,19 @@ public class Client {
       throw new RuntimeException(e);
     } catch (IOException e) {
       throw new RuntimeException(e);
+    } finally {
+      try {
+        if (out != null) {
+          out.close();
+        }
+        if (in != null) {
+          in.close();
+          clientSocket.close();
+        }
+      }
+      catch (IOException e) {
+        e.printStackTrace();
+      }
     }
   }
 }

@@ -1,5 +1,7 @@
 import java.io.*;
 import java.net.*;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 public class Server {
   static ProductService productService = new ProductService();
@@ -21,29 +23,88 @@ public class Server {
     String fileName = args[2];
 
     parseInventoryFile(fileName);
-    try {
-      DatagramSocket datasocket = new DatagramSocket (udpPort);
 
-      ServerSocket serverSocket = new ServerSocket (tcpPort);
+    tcpThread(tcpPort);
+    udpThread(udpPort);
+  }
 
-      while (true) {
-        //TCP:
-        Socket clientSocket = serverSocket.accept();
-        TCPClientHandler tcpHandler = new TCPClientHandler(clientSocket);
-        new Thread(tcpHandler).start();
+  public static void tcpThread(int tcpPort) {
+    new Thread(() -> {
+      ExecutorService executor = null;
+      try (ServerSocket serverSocket = new ServerSocket (tcpPort)) {
+        executor = Executors.newFixedThreadPool(5);
+        while(true) {
+          Socket clientSocket = serverSocket.accept();
+          executor.execute(() -> {
+            PrintWriter out = null;
+            BufferedReader in = null;
+            try {
+              out = new PrintWriter(clientSocket.getOutputStream(), true);
+              in = new BufferedReader(new InputStreamReader(clientSocket.getInputStream()));
 
-        //UDP:
-        byte [] rBuf = new byte [1024];
-        DatagramPacket datapacket = new DatagramPacket(rBuf, rBuf.length);
-        datasocket.receive(datapacket);
-        UDPClientHandler udpHandler = new UDPClientHandler(datasocket, datapacket);
-        new Thread(udpHandler).start();
+              String line;
+              while ((line = in.readLine()) != null) {
+                String returnMessage = implementClientMessage(line);
+                out.println(returnMessage);
+              }
+            }
+            catch (IOException e) {
+              e.printStackTrace();
+            }
+            finally {
+              try {
+                if (out != null) {
+                  out.close();
+                }
+                if (in != null) {
+                  in.close();
+                  clientSocket.close();
+                }
+              }
+              catch (IOException e) {
+                e.printStackTrace();
+              }
+            }
+          });
+        }
+      } catch (IOException e) {
+        System.err.println("Cannot open the port on TCP");
+        e.printStackTrace();
+      } finally {
+        System.out.println("Closing TCP server");
+        if (executor != null) {
+          executor.shutdown();
+        }
       }
-    } catch (SocketException e) {
-      throw new RuntimeException(e);
-    } catch (IOException e) {
-      throw new RuntimeException(e);
-    }
+    }).start();
+  }
+
+  public static void udpThread(int udpPort) {
+    new Thread(() -> {
+      try (DatagramSocket dataSocket = new DatagramSocket(udpPort)) {
+        byte[] buf = new byte[dataSocket.getReceiveBufferSize()];
+        DatagramPacket dataPacket = new DatagramPacket(buf, buf.length);
+
+        while(true) {
+          dataSocket.receive(dataPacket);
+          String messageFromClient = new String(dataPacket.getData(), 0, dataPacket.getLength());
+
+          String returnMessage = implementClientMessage(messageFromClient);
+
+          byte[] returnMessageBuf = new byte[returnMessage.length()];
+          returnMessageBuf = returnMessage.getBytes();
+          DatagramPacket returnpacket = new DatagramPacket(returnMessageBuf, returnMessageBuf.length, dataPacket.getAddress(), dataPacket.getPort());
+          dataSocket.send(returnpacket);
+        }
+      } catch (SocketException e) {
+        System.err.println("Cannot open the port on UDP");
+        e.printStackTrace();
+      } catch (IOException e) {
+        throw new RuntimeException(e);
+      } finally {
+        System.out.println("Closing UDP server");
+      }
+    }).start();
   }
 
   public static void parseInventoryFile(String fileName) {
@@ -66,77 +127,22 @@ public class Server {
     }
   }
 
-  static class UDPClientHandler implements Runnable {
-    DatagramSocket socket;
-    DatagramPacket pkt;
-    public UDPClientHandler(DatagramSocket socket, DatagramPacket pkt) {
-      this.socket = socket;
-      this.pkt = pkt;
+  public static String implementClientMessage(String clientMessage) {
+    String[] tokens = clientMessage.split(" ");
+
+    if (tokens[0].equals("purchase")) {
+      return purchase(tokens[1], tokens[2], Integer.parseInt(tokens[3]));
+    } else if (tokens[0].equals("cancel")) {
+      return cancel(tokens[1]);
+    } else if (tokens[0].equals("search")) {
+      return search(tokens[1]);
+    } else if (tokens[0].equals("list")) {
+      return list();
     }
-
-    public void run() {
-      try {
-        byte [] sBuf = new byte [1024];
-        String messageFromClient = new String(pkt.getData(), 0, pkt.getLength());
-
-        //use line
-        //return message back to client
-
-        String returnMessage = "aaaa";
-
-        byte[] rBuf = new byte[returnMessage.length()];
-        rBuf = returnMessage.getBytes();
-        DatagramPacket returnpacket = new DatagramPacket(rBuf, rBuf.length, pkt.getAddress(), pkt.getPort());
-        socket.send(returnpacket);
-      }
-      catch (IOException e) {
-        e.printStackTrace();
-      }
-    }
+    return "";
   }
 
-  static class TCPClientHandler implements Runnable {
-    Socket clientSocket;
-    public TCPClientHandler(Socket socket)
-    {
-      this.clientSocket = socket;
-    }
-    public void run() {
-      PrintWriter out = null;
-      BufferedReader in = null;
-      try {
-        out = new PrintWriter(clientSocket.getOutputStream(), true);
-        in = new BufferedReader(new InputStreamReader(clientSocket.getInputStream()));
-
-        String line;
-        while ((line = in.readLine()) != null) {
-          //use line
-          //send output pack to client
-          System.out.printf(" Sent from the client: %s\n", line);
-          out.println(line);
-        }
-      }
-      catch (IOException e) {
-        e.printStackTrace();
-      }
-      finally {
-        try {
-          if (out != null) {
-            out.close();
-          }
-          if (in != null) {
-            in.close();
-            clientSocket.close();
-          }
-        }
-        catch (IOException e) {
-          e.printStackTrace();
-        }
-      }
-    }
-  }
-
-  public String purchase (String userName, String productName, int quantity) {
+  public static String purchase(String userName, String productName, int quantity) {
     int productIndex = productService.getProductIndex(productName);
     if (productIndex < 0) {
       return "Not Available - We do not sell this product";
@@ -155,7 +161,7 @@ public class Server {
     return "You order has been placed, " + orderIdStr + " " + userName + " " + productName + " " + quantity;
   }
 
-  public String cancel(String orderId) {
+  public static String cancel(String orderId) {
     int orderIndex = orderService.getOrderIndex(orderId);
     if (orderIndex < 0) {
       return orderId + " not found, no such order";
@@ -167,11 +173,11 @@ public class Server {
     return "Order " + orderId + " is canceled";
   }
 
-  public String search(String userName) {
+  public static String search(String userName) {
     String allUserOrders = "";
     for (Order o: orderService.getOrders()) {
       if (o.userName.equals(userName)) {
-        allUserOrders += o.orderId + ", " + o.productName + ", " + o.quantity + "\n";
+        allUserOrders += o.orderId + ", " + o.productName + ", " + o.quantity + ";";
       }
     }
     if(allUserOrders.length() == 0) {
@@ -180,10 +186,10 @@ public class Server {
     return allUserOrders;
   }
 
-  public String list() {
+  public static String list() {
     String listStr = "";
     for (Product p: productService.getTable()) {
-      listStr += p.productName + " " + p.quantity + "\n";
+      listStr += p.productName + " " + p.quantity + ";";
     }
     return listStr;
   }
